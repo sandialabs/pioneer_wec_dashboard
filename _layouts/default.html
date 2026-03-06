@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ page.title | default: site.title }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+        
+        header {
+            background: linear-gradient(135deg, #0098DB 0%, #006699 100%);
+            color: white;
+            padding: 2rem 0;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        header h1 {
+            margin-bottom: 0.5rem;
+            font-size: 2.5rem;
+        }
+        
+        nav {
+            margin-top: 1rem;
+        }
+        
+        nav a {
+            color: white;
+            text-decoration: none;
+            margin-right: 1.5rem;
+            font-weight: 500;
+            opacity: 0.9;
+            transition: opacity 0.2s;
+        }
+        
+        nav a:hover {
+            opacity: 1;
+            text-decoration: underline;
+        }
+        
+        main {
+            padding: 2rem 0;
+        }
+        
+        .content-section {
+            background: white;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        .content-section h2 {
+            color: #0098DB;
+            margin-bottom: 1rem;
+            font-size: 2rem;
+        }
+        
+        .content-section h3 {
+            margin-top: 1.5rem;
+            margin-bottom: 0.5rem;
+            color: #555;
+        }
+        
+        .content-section a {
+            color: #0098DB;
+            text-decoration: none;
+        }
+        
+        .content-section a:hover {
+            text-decoration: underline;
+        }
+        
+        .content-section ul {
+            margin-left: 2rem;
+            margin-bottom: 1rem;
+        }
+        
+        .content-section li {
+            margin-bottom: 0.5rem;
+        }
+        
+        .stats-section {
+            margin-bottom: 2rem;
+        }
+        
+        .stats-section h2 {
+            margin-bottom: 1.5rem;
+            font-size: 2rem;
+            color: #333;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-left: 4px solid #0098DB;
+        }
+        
+        .stat-card h3 {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            color: #888;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+        
+        .stat-card p {
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .plots-section {
+            margin-bottom: 2rem;
+        }
+        
+        .plots-section h2 {
+            margin-bottom: 1.5rem;
+            font-size: 2rem;
+            color: #333;
+        }
+        
+        .plots-section h3 {
+            margin-top: 2rem;
+            margin-bottom: 1rem;
+            color: #0098DB;
+            font-size: 1.5rem;
+        }
+        
+        .plot-list {
+            list-style: none;
+            margin-left: 0;
+            margin-bottom: 2rem;
+            padding-left: 0;
+        }
+        
+        .plot-list li {
+            padding: 0.75rem 0;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .plot-list li:last-child {
+            border-bottom: none;
+        }
+        
+        .plot-list a {
+            color: #333;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            transition: color 0.2s;
+        }
+        
+        .plot-list a:hover {
+            color: #0098DB;
+        }
+        
+        .plot-list .icon {
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
+        
+        .plot-list strong {
+            color: #0098DB;
+        }
+        
+        .data-section {
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin-bottom: 2rem;
+        }
+        
+        .data-section h2 {
+            color: #0098DB;
+            margin-bottom: 1rem;
+            font-size: 2rem;
+        }
+        
+        .data-files {
+            list-style: none;
+            margin-left: 0;
+        }
+        
+        .data-files li {
+            padding: 0.75rem 0;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .data-files li:last-child {
+            border-bottom: none;
+        }
+        
+        .data-files a {
+            color: #0098DB;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        
+        .data-files a:hover {
+            text-decoration: underline;
+        }
+        
+        .file-size {
+            color: #888;
+            font-size: 0.9rem;
+        }
+        
+        .references-section {
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin-bottom: 2rem;
+        }
+        
+        .references-section h2 {
+            color: #0098DB;
+            margin-bottom: 1rem;
+            font-size: 2rem;
+        }
+        
+        .bibliography {
+            list-style: none;
+            counter-reset: bib-counter;
+            padding-left: 0;
+        }
+        
+        .bibliography li {
+            counter-increment: bib-counter;
+            position: relative;
+            padding-left: 0;
+            margin-bottom: 1rem;
+            line-height: 1.6;
+        }
+        
+        .bibliography li::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            font-weight: bold;
+            color: #0098DB;
+        }
+        
+        .bibliography a {
+            color: #0098DB;
+            text-decoration: none;
+            word-break: break-all;
+        }
+        
+        .bibliography a:hover {
+            text-decoration: underline;
+        }
+        
+        .citation {
+            color: #0098DB;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        
+        .citation:hover {
+            text-decoration: underline;
+        }
+        
+        footer {
+            background: #333;
+            color: white;
+            padding: 2rem 0;
+            margin-top: 3rem;
+            text-align: center;
+        }
+        
+        footer p {
+            margin-bottom: 0.5rem;
+        }
+        
+        footer a {
+            color: #0098DB;
+            text-decoration: none;
+        }
+        
+        footer a:hover {
+            text-decoration: underline;
+        }
+        
+        @media (max-width: 768px) {
+            header h1 {
+                font-size: 1.8rem;
+            }
+            
+            nav {
+                display: flex;
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+            
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>🌊 Pioneer WEC Dashboard</h1>
+            <nav>
+                <a href="#overview">Overview</a>
+                <a href="#gallery">Gallery</a>
+                <a href="#stats">Statistics</a>
+                <a href="#plots">Visualizations</a>
+                <a href="#data">Data</a>
+                <a href="#references">References</a>
+            </nav>
+        </div>
+    </header>
+    
+    <main class="container">
+        {{ content }}
+    </main>
+    
+    <footer>
+        <div class="container">
+            <p>Generated on {{ site.time | date: "%Y-%m-%d %H:%M UTC" }}</p>
+            <p>Data from <a href="https://oceanobservatories.org/" target="_blank">Ocean Observatories Initiative</a></p>
+            <p>View on <a href="https://github.com/rgcoe/pioneer_wec_dashboard" target="_blank">GitHub</a></p>
+        </div>
+    </footer>
+
+    <script>
+        // Open external links in new tabs
+        document.querySelectorAll('a[href^="http"]').forEach(link => {
+            link.setAttribute('target', '_blank');
+            link.setAttribute('rel', 'noopener noreferrer');
+        });
+    </script>
+</body>
+</html>

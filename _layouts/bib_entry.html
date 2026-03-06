@@ -1,0 +1,12 @@
+<div class="bib-entry">
+  {% assign doi_period = '. doi: ' | append: entry.doi %}
+  {% assign doi_comma = ', doi: ' | append: entry.doi %}
+  {% assign cleaned = reference | replace: doi_period, '' | replace: doi_comma, '' | strip %}
+  {% if cleaned contains '..' %}
+    {% assign cleaned = cleaned | replace: '..', '.' %}
+  {% endif %}
+  {% if cleaned contains '.,' %}
+    {% assign cleaned = cleaned | replace: '.,', '.' %}
+  {% endif %}
+  {{ cleaned }}{% if entry.doi %} doi: <a href="https://doi.org/{{ entry.doi }}" target="_blank" rel="noopener">{{ entry.doi }}</a>{% elsif entry.url %} <a href="{{ entry.url }}" target="_blank" rel="noopener">{{ entry.url }}</a>{% endif %}
+</div>

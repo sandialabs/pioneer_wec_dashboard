@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.cache/
+
+# Jekyll
+.jekyll-cache/
+
+# Generated Jekyll includes (regenerated on each build)
+_includes/stats.html
+_includes/plots.html
+_includes/data_downloads.html
+
+# Generated output files (plots and data)
+output/*
+
+# Ruby/Bundler
+vendor/
+.bundle/
+
+# IDE
+.vscode/
+
+# Temporary files
+tmp*.ipynb
