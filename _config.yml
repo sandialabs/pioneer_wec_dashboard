@@ -1,0 +1,55 @@
+title: Pioneer WEC Dashboard
+description: Wave Energy Converter performance monitoring and analysis
+baseurl: ""
+url: "https://rgcoe.github.io/pioneer_wec_dashboard"
+
+# Build settings
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+# Jekyll Scholar settings
+plugins:
+  - jekyll-scholar
+
+scholar:
+  source: .
+  bibliography: pioneer_wec_dashboard.bib
+  bibliography_template: bib_entry
+  style: ieee
+  locale: en
+  sort_by: author
+  order: ascending
+  # separate_links: true
+  # details_dir: bibliography
+  # details_layout: details.html
+  # details_permalink: /bibliography/:key.html
+  query: "@*"
+
+# Exclude from processing
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - requirements.txt
+  - app.py
+  - parse_wec_decimated_log.py
+  - tmp1.ipynb
+  - __pycache__
+  - .cache
+  - "*.py"
+  - "*.ipynb"
+  - "*.csv"
+  - README.md
+  - output
+  - .git
+  - .gitignore
+  - .github
+
+# Include in processing
+include:
+  - _data
+  - images
+
+# Output directory
+destination: output/site

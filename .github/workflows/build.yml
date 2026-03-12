@@ -1,0 +1,107 @@
+name: Build and deploy
+
+on:
+  push:
+    branches:
+      - main # Optional: specify the branch to run on push events
+  schedule:
+    - cron: "30 4 * * *"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Cache data
+        uses: actions/cache@v5
+        with:
+          path: .cache
+          key: txt-logs-cache
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt || true
+
+      - name: Fetch data
+        run: |
+          mkdir -p output
+          python app.py fetch-data
+
+      - name: Generate plots
+        run: |
+          python app.py generate-plots
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.2"
+          bundler-cache: true
+
+      - name: Build site
+        run: |
+          bundle install
+          python app.py build-site
+
+      - name: List directory contents
+        run: ls -lRa output
+
+      - name: Upload output HTML as artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: site-output
+          path: ./output
+
+  make-site:
+    needs: build
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download output HTML artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: site-output
+          path: ./output
+
+      - name: List directory contents
+        run: ls -lR .
+
+      - name: Create .nojekyll file
+        run: touch output/.nojekyll
+
+      - name: List directory contents again
+        run: ls -lR .
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./output
+
+  # deploy:
+  #   needs: build
+
+  #   runs-on: ubuntu-latest
+
+  #   permissions:
+  #     id-token: write
+  #     pages: write
+
+  #   steps:
+  #     - name: Download output HTML artifact
+  #       uses: actions/download-artifact@v5
+
+  #     - name: List directory contents
+  #       run: ls -l .
+
+  #     - name: Deploy to GitHub Pages
+  #       id: deployment
+  #       uses: actions/deploy-pages@v4
