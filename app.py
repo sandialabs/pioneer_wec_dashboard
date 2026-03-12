@@ -1014,7 +1014,7 @@ def make_time_hist(ds):
             name="Battery voltage",
             mode="lines",
             line=dict(color="black"),
-            hovertemplate="%{y:.1f} W",
+            hovertemplate="%{y:.1f} V",
         ),
         row=8,
         col=1,
