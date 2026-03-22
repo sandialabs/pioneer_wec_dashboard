@@ -390,32 +390,25 @@ def fetch_ndbc_spectral(
     for buoy_id in buoy_ids:
         urls_to_try = []
         
-        # 1. Try historical spectral data for past years
+        # 1. Past year historical
         for year in range(start_year, current_year):
             urls_to_try.append({
                 "url": f"https://www.ndbc.noaa.gov/data/historical/swden/{buoy_id}w{year}.txt.gz",
-                "type": "historical_spectral",
+                "type": "historical_past_year",
                 "year": year,
             })
-        
-        # 2. Try real-time spectral data for current year
-        urls_to_try.append({
-            "url": f"https://www.ndbc.noaa.gov/data/realtime2/{buoy_id}.swden",
-            "type": "realtime_spectral"
-        })
-        
-        # 3. Try spectral archive (alternative realtime source)
-        urls_to_try.append({
-            "url": f"https://www.ndbc.noaa.gov/data/spectral/{buoy_id}.swden",
-            "type": "spectral_archive"
-        })
 
-        # 4. Try realtime2 spectral data TODO
-        # urls_to_try.append({
-        #     "url": f"https://www.ndbc.noaa.gov/data/realtime2/{buoy_id}.data_spec",
-        #     "type": "realtime2_spectral"
-        # })
-        
+        # 2. Current year historical
+        for month in range(1, now.month + 1):
+            month_str = datetime(current_year, month, 1).strftime("%b")
+            urls_to_try.append({
+                "url": f"https://www.ndbc.noaa.gov/data/swden/{month_str}/{buoy_id}1{current_year}.txt.gz", #TODO - not sure if this should be 1 or month_int
+                "type": "historical_current_year",
+                "year": current_year,
+                "month": month
+            })
+
+
         logger.info(f"Fetching NDBC spectral data for buoy {buoy_id}")
         logger.info(f"Will try {len(urls_to_try)} URLs")
         
@@ -424,13 +417,12 @@ def fetch_ndbc_spectral(
             url = url_info["url"]
             for attempt in range(max_retries):
                 try:
-                    logger.info(f"Fetching {url_info['type']} data from {url} (attempt {attempt + 1})")
                     da1 = _parse_ndbc_spectral(url)
                     dal.append(da1)
-                    logger.info(f"Successfully fetched {len(da1.time)} spectral records")
+                    logger.info(f"{url}: Fetched {len(da1.time)} spectral records")
                     break
                 except Exception as e:
-                    logger.warning(f"Failed to fetch/parse spectral data from {url}: {e}")
+                    logger.warning(f"{url}: failed ({e})")
                     if attempt == max_retries - 1:
                         logger.debug(f"Max retries reached for {url}, skipping.")
                     else:
