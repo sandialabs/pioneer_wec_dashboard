@@ -1,5 +1,6 @@
 # Pioneer WEC dashboard
-A simple dashboard for viewing up-to-date data from the Pioneer WEC v1 prototype.
+A simple dashboard for viewing up-to-date data from the Pioneer WEC v1 prototype. 
+https://sandialabs.github.io/pioneer_wec_dashboard/
 
 ## Usage
 Build the dashboard site locally with the steps below.
