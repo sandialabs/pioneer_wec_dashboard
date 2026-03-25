@@ -10,6 +10,7 @@ import plotly
 from plotly_calplot import calplot
 import requests
 import logging
+from scipy.optimize import root_scalar
 from parse_wec_decimated_log import parse_putty_log
 import os
 from pathlib import Path
@@ -1170,6 +1171,121 @@ def make_power_matrix(ds):
     return fig
 
 
+def _compute_wavelength_intermediate_depth(period_s, depth_m):
+    g = 9.81
+
+    def solve_wavenumber(period):
+        if not np.isfinite(period) or period <= 0:
+            return np.nan
+
+        omega = 2 * np.pi / period
+
+        def dispersion_residual(k):
+            return g * k * np.tanh(k * depth_m) - omega**2
+
+        k_low = 1e-8
+        k_high = max(omega**2 / g, k_low * 10)
+
+        while dispersion_residual(k_high) <= 0 and k_high < 1e3:
+            k_high *= 2
+
+        try:
+            result = root_scalar(
+                dispersion_residual,
+                bracket=[k_low, k_high],
+                method="brentq",
+                xtol=1e-12,
+                rtol=1e-10,
+                maxiter=100,
+            )
+            if result.converged and result.root > 0:
+                return result.root
+        except ValueError:
+            pass
+
+        # Fallback to deep-water approximation if solver fails
+        return omega**2 / g
+
+    periods = np.asarray(period_s, dtype=float)
+    k = np.array([solve_wavenumber(period) for period in periods], dtype=float)
+    wavelength = 2 * np.pi / k
+    return wavelength
+
+
+def make_power_vs_wave_slope(ds, depth_m=50.0):
+    ds0 = ds.mean("buoy")
+    df = ds0[["WVHT", "APD", "DcP"]].to_dataframe().dropna()
+    df = df[df["APD"] > 0]
+
+    # Intermediate-depth dispersion relation:
+    # omega^2 = g k tanh(k h), lambda = 2pi / k
+    df["wavelength"] = _compute_wavelength_intermediate_depth(
+        df["APD"].to_numpy(dtype=float), depth_m
+    )
+    df["wave_slope"] = df["WVHT"] / df["wavelength"]
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["wave_slope", "DcP"])
+    df = df[df["wave_slope"] > 0]
+
+    fig = make_subplots(rows=1, cols=1)
+
+    fig.add_trace(
+        go.Scatter(
+            x=df["wave_slope"],
+            y=df["DcP"],
+            mode="markers",
+            marker=dict(
+                size=4,
+                color=df["WVHT"],
+                colorscale="Viridis",
+                opacity=0.5,
+                colorbar=dict(title="Sig. wave height [m]"),
+            ),
+            customdata=np.column_stack(
+                [
+                    df.index.strftime("%Y-%m-%d %H:%M"),
+                    df["WVHT"].to_numpy(dtype=float),
+                    df["wavelength"].to_numpy(dtype=float),
+                ]
+            ),
+            hovertemplate="%{customdata[0]}<br>Sig. wave height: %{customdata[1]:.1f} m<br>Wavelength: %{customdata[2]:.0f} m<br>Wave slope: %{x:.4f}<br>DC power: %{y:.1f} W<extra></extra>",
+            name="Hourly averages",
+        ),
+    )
+
+    if len(df) >= 10 and df["wave_slope"].nunique() > 1:
+        slope_min = df["wave_slope"].min()
+        slope_max = df["wave_slope"].max()
+        slope_bins = np.linspace(slope_min, slope_max, 21)
+        df["slope_bin"] = pd.cut(df["wave_slope"], bins=slope_bins, include_lowest=True)
+        trend = df.groupby("slope_bin", observed=False)["DcP"].mean().dropna()
+
+        if len(trend) > 0:
+            bin_centers = np.array([interval.mid for interval in trend.index], dtype=float)
+            fig.add_trace(
+                go.Scatter(
+                    x=bin_centers,
+                    y=trend.values,
+                    mode="lines",
+                    line=dict(color='black', width=3),
+                    hovertemplate="Mean: %{y:.1f} W<extra></extra>",
+                    name="Mean",
+                ),
+            )
+
+    fig.update_layout(
+        template="simple_white",
+        showlegend=False,
+    )
+    fig.update_layout(
+        xaxis_title="Sig. wave steepness, H/λ [-]",
+        yaxis_title="DC power [W]",
+    )
+    fig.update_yaxes(range=[0, np.infty])
+    fig.update_xaxes(range=[0, np.infty])
+
+    return fig
+
+
 def make_cw_matrix(ds, tp_to_te=0.9):
     ds0 = ds.mean("buoy")
     ds0["Te"] = ds0["DPD"] * tp_to_te
@@ -1578,6 +1694,7 @@ def generate_jekyll_includes(ds, ds_pwrsys):
         'jpd': {'title': 'Joint Probability Distribution', 'description': 'Wave height vs. peak period occurrence density', 'icon': '📊'},
         'correlation_matrix': {'title': 'Correlation Matrix', 'description': 'Scatter matrix showing correlations between key variables', 'icon': '🔗'},
         'power_matrix': {'title': 'Power Matrix', 'description': 'Average DC power as function of wave height and period', 'icon': '⚡'},
+        'power_vs_wave_slope': {'title': 'Wave Slope Analysis', 'description': 'WEC DC power versus wave slope (height/wavelength)', 'icon': '📐'},
         'cw_matrix': {'title': 'Capture Width Matrix', 'description': 'Capture width efficiency across sea states', 'icon': '📏'},
         'histograms': {'title': 'Power Histograms', 'description': 'Distribution of DC and export power', 'icon': '📊'},
         'gain_scatter': {'title': 'Damping Gain Analysis', 'description': 'Power output vs. control system damping gain', 'icon': '🎛️'},
@@ -1759,6 +1876,9 @@ def generate_plots() -> None:
 
     fig12 = make_spectral_overview(ds, ds_spectral)
     fig12.write_html("output/spectral_overview.html")
+
+    fig13 = make_power_vs_wave_slope(ds)
+    fig13.write_html("output/power_vs_wave_slope.html")
 
     logger.info("Plot generation complete")
 
