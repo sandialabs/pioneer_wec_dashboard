@@ -14,7 +14,6 @@ from scipy.optimize import root_scalar
 from parse_wec_decimated_log import parse_putty_log
 import os
 from pathlib import Path
-from dateutil.relativedelta import relativedelta
 
 colors = plotly.colors.DEFAULT_PLOTLY_COLORS
 
@@ -26,6 +25,29 @@ logger = logging.getLogger(__name__)
 WEC_TEXT_CACHE = Path(".cache/wec")
 PWRSYS_TEXT_CACHE = Path(".cache/pwrsys")
 DATA_DIR = Path("output/data")
+
+# THREDDS-based NDBC data fetching
+THREDDS_FILESERVER = "https://dods.ndbc.noaa.gov/thredds/fileServer"
+NDBC_STDMET_CACHE = Path(".cache/ndbc/stdmet")
+NDBC_SWDEN_CACHE = Path(".cache/ndbc/swden")
+SPECTRAL_BUOY = "44014"  # Only buoy for which spectral data is fetched
+
+# THREDDS variable name -> legacy short name used by downstream plotting code
+_STDMET_VAR_RENAME = {
+    "wind_dir": "WDIR",
+    "wind_spd": "WSPD",
+    "gust": "GST",
+    "wave_height": "WVHT",
+    "dominant_wpd": "DPD",
+    "average_wpd": "APD",
+    "mean_wave_dir": "MWD",
+    "air_pressure": "PRES",
+    "air_temperature": "ATMP",
+    "sea_surface_temperature": "WTMP",
+    "dewpt_temperature": "DEWP",
+    "visibility": "VIS",
+    "water_level": "TIDE",
+}
 
 
 def _ensure_wec_text_cache_dir() -> None:
@@ -48,6 +70,107 @@ def _ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _thredds_stdmet_urls(buoy_id: str, start_year: int, current_year: int) -> list[dict]:
+    """Return ordered list of THREDDS stdmet file descriptors for a buoy/date window."""
+    urls = []
+    for year in range(start_year, current_year + 1):
+        urls.append({
+            "url": f"{THREDDS_FILESERVER}/data/stdmet/{buoy_id}/{buoy_id}h{year}.nc",
+            "type": "yearly",
+            "local": NDBC_STDMET_CACHE / buoy_id / f"{buoy_id}h{year}.nc",
+        })
+    # Rolling file updated daily; always re-download
+    urls.append({
+        "url": f"{THREDDS_FILESERVER}/data/stdmet/{buoy_id}/{buoy_id}h9999.nc",
+        "type": "current",
+        "local": NDBC_STDMET_CACHE / buoy_id / f"{buoy_id}h9999.nc",
+    })
+    return urls
+
+
+def _thredds_swden_urls(buoy_id: str, start_year: int, current_year: int) -> list[dict]:
+    """Return ordered list of THREDDS swden file descriptors for a buoy/date window."""
+    urls = []
+    for year in range(start_year, current_year + 1):
+        urls.append({
+            "url": f"{THREDDS_FILESERVER}/data/swden/{buoy_id}/{buoy_id}w{year}.nc",
+            "type": "yearly",
+            "local": NDBC_SWDEN_CACHE / buoy_id / f"{buoy_id}w{year}.nc",
+        })
+    # Rolling file updated daily; always re-download
+    urls.append({
+        "url": f"{THREDDS_FILESERVER}/data/swden/{buoy_id}/{buoy_id}w9999.nc",
+        "type": "current",
+        "local": NDBC_SWDEN_CACHE / buoy_id / f"{buoy_id}w9999.nc",
+    })
+    return urls
+
+
+def _download_thredds_file(url: str, local_path: Path) -> bool:
+    """Download a single file from the THREDDS fileServer to local cache.
+    Returns True on success, False if the file is not found or the download fails.
+    """
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        resp = requests.get(url, timeout=120, stream=True)
+        if resp.status_code == 404:
+            logger.debug(f"Not found on THREDDS: {url}")
+            return False
+        resp.raise_for_status()
+        with open(local_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1 << 17):
+                f.write(chunk)
+        logger.info(f"Downloaded {url} -> {local_path}")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to download {url}: {e}")
+        return False
+
+
+def _open_cached_netcdf(local_path: Path) -> xr.Dataset:
+    """Open cached NetCDF with engine fallbacks.
+
+    THREDDS fileServer often serves classic NetCDF3 files, which are not
+    readable by h5netcdf. Try scipy first, then other engines.
+    """
+    # NDBC period variables advertise "seconds" units; keeping them numeric avoids
+    # timedelta coercion warnings and matches downstream expectations.
+    open_kwargs = {"mask_and_scale": True, "decode_timedelta": False}
+    errors = []
+    for engine in ("scipy", "h5netcdf", "netcdf4"):
+        try:
+            return xr.open_dataset(local_path, engine=engine, **open_kwargs)
+        except Exception as e:
+            errors.append(f"{engine}: {e}")
+
+    try:
+        return xr.open_dataset(local_path, **open_kwargs)
+    except Exception as e:
+        errors.append(f"auto: {e}")
+
+    raise OSError("; ".join(errors))
+
+
+def _adapt_ndbc_stdmet(ds: xr.Dataset) -> xr.Dataset:
+    """Rename THREDDS stdmet variable names to legacy short names and add dir_diff.
+    Called by load_cached_data before returning ds_ndbc to downstream consumers.
+    """
+    rename = {k: v for k, v in _STDMET_VAR_RENAME.items() if k in ds}
+    ds = ds.rename(rename)
+    if "MWD" in ds and "WDIR" in ds:
+        ds["dir_diff"] = np.abs(ds["MWD"] - ds["WDIR"]) % 180
+        ds["dir_diff"].attrs["units"] = "\u00b0"
+        ds["dir_diff"].attrs["long_name"] = "Direction Difference"
+    return ds
+
+
+def _adapt_ndbc_spectral(ds: xr.Dataset) -> xr.Dataset:
+    """Rename spectral_wave_density -> spectral_density for downstream compatibility."""
+    if "spectral_wave_density" in ds:
+        ds = ds.rename({"spectral_wave_density": "spectral_density"})
+    return ds
+
+
 def fetch_ndbc(
     buoy_id: str = "44014", start_date: datetime = None, max_retries: int = 1
 ) -> xr.Dataset:
@@ -61,411 +184,88 @@ def fetch_ndbc(
     num_days = (now - start_date).days + 1
     
     logger.info(
-        f"Fetching NDBC data starting from {start_date.strftime('%Y-%m-%d')} ({num_days} days)"
+        f"Fetching NDBC stdmet for buoy {buoy_id} from {start_date} ({num_days} days)"
     )
 
-    urls_to_try = []
-    
-    # Strategy: Prefer historical yearly data, fall back to monthly data
-    # Historical data is most complete and reliable
-    
-    # 1. Try historical data for all past years
-    # Historical files are complete and more reliable than monthly archives
-    for year in range(start_year, current_year):
-        urls_to_try.append({
-            "url": f"https://www.ndbc.noaa.gov/data/historical/stdmet/{buoy_id}h{year}.txt.gz",
-            "type": "historical",
-            "year": year,
-        })
-    
-    # 2. For partial years and current year, fetch monthly data
-    # Build list of all months we need
-    date_cursor = datetime(start_date.year, start_date.month, 1).date()
-    end_date = datetime(now.year, now.month, 1).date()
-    
-    while date_cursor <= end_date:
-        year = date_cursor.year
-        month = date_cursor.month
-        month_str = date_cursor.strftime("%b")
-        
-        # Skip months covered by historical data
-        skip_month = year < current_year
-        
-        if not skip_month:
-            # Calculate how old this month is
-            months_ago = (current_year - year) * 12 + (now.month - month)
-            
-            # Try monthly archive with year suffix for months >= 2 months old
-            if months_ago >= 2:
-                urls_to_try.append({
-                    "url": f"https://www.ndbc.noaa.gov/data/stdmet/{month_str}/{buoy_id}b{year}.txt.gz",
-                    "type": "monthly_archive",
-                    "year": year,
-                    "month": month
-                })
-            
-            # Try monthly real-time for recent months (< 2 months) or as fallback
-            urls_to_try.append({
-                "url": f"https://www.ndbc.noaa.gov/data/stdmet/{month_str}/{buoy_id}.txt",
-                "type": "monthly_realtime",
-                "year": year,
-                "month": month
-            })
-        
-        date_cursor += relativedelta(months=1)
-    
-    # 3. Always include real-time data for latest observations
-    urls_to_try.append({
-        "url": f"https://www.ndbc.noaa.gov/data/realtime2/{buoy_id}.txt",
-        "type": "realtime2"
-    })
-    
-    logger.info(f"Fetching NDBC data for buoy {buoy_id}")
-    logger.info(f"Will try {len(urls_to_try)} URLs")
-    
+    url_infos = _thredds_stdmet_urls(buoy_id, start_year, current_year)
     dsl = []
-    for url_info in urls_to_try:
-        url = url_info["url"]
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Fetching {url_info['type']} data from {url} (attempt {attempt + 1})")
-                ds1 = _parse_ndbc_stdmet(url)
-                dsl.append(ds1)
-                logger.info(f"Successfully fetched {len(ds1.time)} records")
-                break
-            except Exception as e:
-                logger.warning(f"Failed to fetch/parse data from {url}: {e}")
-                if attempt == max_retries - 1:
-                    logger.debug(f"Max retries reached for {url}, skipping.")
-                else:
-                    logger.info(f"Retrying...")
-    
+    for info in url_infos:
+        local = info["local"]
+        # Yearly files are cached permanently; rolling current file is always refreshed
+        if info["type"] == "current" or not local.exists():
+            if not _download_thredds_file(info["url"], local):
+                continue
+        if not local.exists():
+            continue
+        try:
+            ds1 = _open_cached_netcdf(local)
+            # Some files carry tiny lat/lon coordinate differences across years.
+            # Collapse singleton geo dims per file before concat to avoid sparse
+            # outer-joined latitude/longitude grids.
+            if "latitude" in ds1.dims and "longitude" in ds1.dims:
+                ds1 = ds1.isel(latitude=0, longitude=0)
+            dsl.append(ds1)
+            logger.info(f"Loaded {local.name}: {len(ds1.time)} records")
+        except Exception as e:
+            logger.warning(f"Failed to open {local}: {e}")
+
     if not dsl:
-        logger.error("No NDBC data was successfully fetched")
+        logger.error(f"No NDBC stdmet data for buoy {buoy_id}")
         return xr.Dataset()
-    
+
     ds = xr.concat(dsl, dim="time").sortby("time").drop_duplicates("time")
     ds = ds.sel(time=slice(pd.Timestamp(start_date), pd.Timestamp(now)))
     ds = ds.expand_dims("buoy").assign_coords(buoy=[buoy_id])
     return ds
 
 
-def _parse_ndbc_stdmet(url: str) -> xr.Dataset:
-
-    df = pd.read_csv(
-        url,
-        sep=r"\s+",
-        comment="#",
-        na_values=["MM", 99.0, 99.00, 999],
-        engine="python",
-        header=None,
-    )
-
-    colnames = [
-        "YY",
-        "MM",
-        "DD",
-        "hh",
-        "mm",
-        "WDIR",
-        "WSPD",
-        "GST",
-        "WVHT",
-        "DPD",
-        "APD",
-        "MWD",
-        "PRES",
-        "ATMP",
-        "WTMP",
-        "DEWP",
-        "VIS",
-        "TIDE",
-    ]
-
-    if url.__contains__("realtime2"):
-        colnames.insert(16, "PTDY")  # add PTDY column for realtime2 files
-
-    df.columns = colnames
-
-    # ---- UNITS (from second header line) ----
-    units = {
-        "YY": "-",
-        "MM": "-",
-        "DD": "-",
-        "hh": "-",
-        "mm": "-",
-        "WDIR": "°",
-        "WSPD": "m/s",
-        "GST": "m/s",
-        "WVHT": "m",
-        "DPD": "s",
-        "APD": "s",
-        "MWD": "°",
-        "PRES": "hPa",
-        "ATMP": "°",
-        "WTMP": "°",
-        "DEWP": "°",
-        "VIS": "nmi",
-        "PTDY": "hPa",
-        "TIDE": "ft",
-    }
-
-    df["time"] = pd.to_datetime(
-        df[["YY", "MM", "DD", "hh", "mm"]]
-        .astype({"YY": "int", "MM": "int", "DD": "int", "hh": "int", "mm": "int"})
-        .rename(
-            columns={
-                "YY": "year",
-                "MM": "month",
-                "DD": "day",
-                "hh": "hour",
-                "mm": "minute",
-            }
-        )
-    )
-
-    df = df.set_index("time")
-
-    # Drop the raw time columns if desired
-    df = df.drop(columns=["YY", "MM", "DD", "hh", "mm"])
-
-    ds = xr.Dataset(
-        {
-            var: (["time"], df[var].values, {"units": units.get(var, "")})
-            for var in df.columns
-        },
-        coords={"time": df.index.values},
-        attrs={},
-    )
-
-    long_names = {
-        "WDIR": "Wind Direction",
-        "WSPD": "Wind Speed",
-        "GST": "Wind Gust",
-        "WVHT": "Significant Wave Height",
-        "DPD": "Peak Wave Period",
-        "APD": "Average Wave Period",
-        "MWD": "Mean Wave Direction",
-        "PRES": "Atmospheric Pressure",
-        "ATMP": "Air Temperature",
-        "WTMP": "Water Temperature",
-        "DEWP": "Dew Point",
-        "VIS": "Visibility",
-        "PTDY": "Pressure Tendency",
-        "TIDE": "Tide",
-        "time": "Time",
-        "buoy": "Buoy ID",
-    }
-    for var in ds.data_vars:
-        if var in long_names:
-            ds[var].attrs["long_name"] = long_names[var]
-
-    ds = ds.sortby("time")
-
-    ds["dir_diff"] = np.abs(ds["MWD"] - ds["WDIR"]) % 180
-    ds["dir_diff"].attrs["units"] = "°"
-    ds["dir_diff"].attrs["long_name"] = "Direction Difference"
-
-    return ds
-
-
-def _parse_ndbc_spectral(url: str) -> xr.DataArray:
-    """
-    Parse NDBC spectral wave density data.
-    Returns DataArray with dimensions (time, frequency) for a single buoy.
-    """
-    
-    df = pd.read_csv(
-        url,
-        sep=r"\s+",
-        comment="#",
-        na_values=["MM", 99.0, 99.00, 999],
-        engine="python",
-        header=None,
-    )
-    
-    # First 5 columns are always: YY MM DD hh mm
-    # Remaining columns are spectral density values at different frequencies
-    # The number of frequency bins varies by buoy but is typically 47
-    
-    n_freq = len(df.columns) - 5
-    freq_cols = list(range(5, len(df.columns)))
-    
-    # Create time index
-    df["time"] = pd.to_datetime(
-        df[[0, 1, 2, 3, 4]]
-        .astype({0: "int", 1: "int", 2: "int", 3: "int", 4: "int"})
-        .rename(
-            columns={
-                0: "year",
-                1: "month",
-                2: "day",
-                3: "hour",
-                4: "minute",
-            }
-        )
-    )
-    
-    # Extract spectral density data
-    spectral_data = df[freq_cols].values  # shape: (n_times, n_frequencies)
-    
-    # Ensure all values are numeric, convert any non-numeric to NaN
-    spectral_data = pd.to_numeric(spectral_data.ravel(), errors='coerce').reshape(spectral_data.shape)
-    
-    times = df["time"].values
-    
-    # Standard NDBC frequency bins (approximate, varies slightly by buoy)
-    # These are typical center frequencies in Hz for standard configurations
-    standard_frequencies = np.array([
-        0.0325, 0.0375, 0.0425, 0.0475, 0.0525, 0.0575, 0.0625, 0.0675,
-        0.0725, 0.0775, 0.0825, 0.0875, 0.0925, 0.1000, 0.1100, 0.1200,
-        0.1300, 0.1400, 0.1500, 0.1600, 0.1700, 0.1800, 0.1900, 0.2000,
-        0.2100, 0.2200, 0.2300, 0.2400, 0.2500, 0.2600, 0.2700, 0.2800,
-        0.2900, 0.3000, 0.3100, 0.3200, 0.3300, 0.3400, 0.3500, 0.3650,
-        0.3850, 0.4050, 0.4250, 0.4450, 0.4650, 0.4850, 0.5000  # 47 bins
-    ])
-    
-    if n_freq <= len(standard_frequencies):
-        # Use standard frequency bins (46 or 47 typically)
-        frequencies = standard_frequencies[:n_freq]
-    else:
-        # If more frequencies than standard, create evenly spaced array
-        frequencies = np.linspace(0.03, 0.50, n_freq)
-    
-    # Create xarray DataArray
-    da = xr.DataArray(
-        spectral_data,
-        coords={
-            "time": times,
-            "frequency": frequencies
-        },
-        dims=["time", "frequency"],
-        name="spectral_density",
-        attrs={
-            "units": "m²/Hz",
-            "long_name": "Wave Spectral Density",
-            "description": "Energy density as a function of frequency"
-        }
-    )
-    
-    da["frequency"].attrs["units"] = "Hz"
-    da["frequency"].attrs["long_name"] = "Frequency"
-    
-    da = da.sortby("time")
-    
-    return da
-
-
 def fetch_ndbc_spectral(
-    buoy_ids: list[str] = None, start_date: datetime = None, max_retries: int = 1
+    start_date: datetime = None, max_retries: int = 1
 ) -> xr.Dataset:
-    """
-    Fetch NDBC spectral wave density data for multiple buoys.
-    
-    Args:
-        buoy_ids: List of NDBC buoy identifiers (default: ["44014"])
-        start_date: Start date for data fetch
-        max_retries: Number of retry attempts for failed requests
-        
-    Returns:
-        xr.Dataset with dimensions (time, frequency, buoy)
-    """
-    
-    if buoy_ids is None:
-        buoy_ids = ["44014"]
-    
+    """Fetch NDBC spectral wave density data for buoy 44014 only."""
+    buoy_id = SPECTRAL_BUOY
     now = datetime.now().date()
     if start_date is None:
         start_date = now - timedelta(days=7)
-    
+
     start_year = start_date.year
     current_year = now.year
     num_days = (now - start_date).days + 1
-    
-    logger.info(
-        f"Fetching NDBC spectral data starting from {start_date.strftime('%Y-%m-%d')} ({num_days} days)"
-    )
-    
-    spectral_datasets = []
-    
-    for buoy_id in buoy_ids:
-        urls_to_try = []
-        
-        # 1. Try historical spectral data for past years
-        for year in range(start_year, current_year):
-            urls_to_try.append({
-                "url": f"https://www.ndbc.noaa.gov/data/historical/swden/{buoy_id}w{year}.txt.gz",
-                "type": "historical_spectral",
-                "year": year,
-            })
-        
-        # 2. Try real-time spectral data for current year
-        urls_to_try.append({
-            "url": f"https://www.ndbc.noaa.gov/data/realtime2/{buoy_id}.swden",
-            "type": "realtime_spectral"
-        })
-        
-        # 3. Try spectral archive (alternative realtime source)
-        urls_to_try.append({
-            "url": f"https://www.ndbc.noaa.gov/data/spectral/{buoy_id}.swden",
-            "type": "spectral_archive"
-        })
 
-        # 4. Try realtime2 spectral data TODO
-        # urls_to_try.append({
-        #     "url": f"https://www.ndbc.noaa.gov/data/realtime2/{buoy_id}.data_spec",
-        #     "type": "realtime2_spectral"
-        # })
-        
-        logger.info(f"Fetching NDBC spectral data for buoy {buoy_id}")
-        logger.info(f"Will try {len(urls_to_try)} URLs")
-        
-        dal = []
-        for url_info in urls_to_try:
-            url = url_info["url"]
-            for attempt in range(max_retries):
-                try:
-                    logger.info(f"Fetching {url_info['type']} data from {url} (attempt {attempt + 1})")
-                    da1 = _parse_ndbc_spectral(url)
-                    dal.append(da1)
-                    logger.info(f"Successfully fetched {len(da1.time)} spectral records")
-                    break
-                except Exception as e:
-                    logger.warning(f"Failed to fetch/parse spectral data from {url}: {e}")
-                    if attempt == max_retries - 1:
-                        logger.debug(f"Max retries reached for {url}, skipping.")
-                    else:
-                        logger.info(f"Retrying...")
-        
-        if not dal:
-            logger.warning(f"No spectral data available for buoy {buoy_id}, skipping")
+    logger.info(
+        f"Fetching NDBC swden for buoy {buoy_id} from {start_date} ({num_days} days)"
+    )
+
+    url_infos = _thredds_swden_urls(buoy_id, start_year, current_year)
+    dsl = []
+    for info in url_infos:
+        local = info["local"]
+        if info["type"] == "current" or not local.exists():
+            if not _download_thredds_file(info["url"], local):
+                continue
+        if not local.exists():
             continue
-        
-        da = xr.concat(dal, dim="time").sortby("time")
-        
-        # Remove duplicates by keeping first occurrence
-        _, index = np.unique(da["time"], return_index=True)
-        da = da.isel(time=index)
-        
-        da = da.sel(time=slice(pd.Timestamp(start_date), pd.Timestamp(now)))
-        da = da.expand_dims("buoy").assign_coords(buoy=[buoy_id])
-        
-        if "time" in da.dims and len(da.time) > 0:
-            spectral_datasets.append(da)
-            logger.info(f"Successfully fetched spectral data for buoy {buoy_id}")
-    
-    if not spectral_datasets:
-        logger.error("No NDBC spectral data was successfully fetched for any buoy")
+        try:
+            ds1 = _open_cached_netcdf(local)
+            # Some files carry tiny lat/lon coordinate differences across years.
+            # Collapse singleton geo dims per file before concat to avoid sparse
+            # outer-joined latitude/longitude grids.
+            if "latitude" in ds1.dims and "longitude" in ds1.dims:
+                ds1 = ds1.isel(latitude=0, longitude=0)
+            dsl.append(ds1)
+            logger.info(f"Loaded {local.name}: {len(ds1.time)} spectral records")
+        except Exception as e:
+            logger.warning(f"Failed to open {local}: {e}")
+
+    if not dsl:
+        logger.error(f"No NDBC swden data for buoy {buoy_id}")
         return xr.Dataset()
-    
-    # Concatenate all buoy DataArrays and convert to Dataset
-    da_combined = xr.concat(spectral_datasets, dim="buoy")
-    ds_combined = da_combined.to_dataset(name="spectral_density")
-    ds_combined = ds_combined.sortby("time").drop_duplicates("time")
-    ds_combined = ds_combined.dropna(dim="time", how="all")
-    logger.info(f"Saved spectral data for {len(spectral_datasets)} buoy(s)")
-    
-    return ds_combined
+
+    ds = xr.concat(dsl, dim="time", join="outer").sortby("time").drop_duplicates("time")
+    ds = ds.sel(time=slice(pd.Timestamp(start_date), pd.Timestamp(now)))
+    ds = ds.expand_dims("buoy").assign_coords(buoy=[buoy_id])
+    return ds
+
 
 
 def fetch_wec_data(start_date: datetime = None, max_retries: int = 3) -> xr.Dataset:
@@ -913,9 +713,9 @@ def make_time_hist(ds):
                     x=dftp.index,
                     y=dftp.mean(axis=1),
                     mode="lines",
-                    name=f"{ds[var].attrs['long_name']}",
+                    name=f"{ds[var].attrs.get('long_name', var)}",
                     line=dict(color=mcolor, width=2),
-                    hovertemplate="%{y:.1f}" + ds[var].attrs["units"],
+                    hovertemplate="%{y:.1f} " + ds[var].attrs.get("units", ""),
                 ),
                 row=i + 1,
                 col=1,
@@ -1406,25 +1206,35 @@ def make_spectral_overview(ds, ds_spectral):
         row=2, col=1
     )
     
-    # Panel 3: Wave spectral density contour
+    # Panel 3: Wave spectral density (downsampled for browser performance)
     if len(ds_spectral.data_vars) > 0 and "spectral_density" in ds_spectral:
         # Use first buoy's data
         ds_spec_buoy = ds_spectral.isel(buoy=0)
-        
-        # Prepare data for contour
-        times = ds_spec_buoy.time.values
-        freqs = ds_spec_buoy.frequency.values
-        spectral_values = ds_spec_buoy.where(ds_spec_buoy.spectral_density > 0).spectral_density.values.T  # Transpose to (freq, time)
-        spectral_values = np.log10(spectral_values)  # Log scale for better visualization
-        
+
+        da_spec = ds_spec_buoy["spectral_density"].transpose("time", "frequency")
+        da_spec = da_spec.resample(time="1H").mean(skipna=True)
+
+        # Cap number of time columns to keep output HTML responsive.
+        max_time_cols = 1500
+        if da_spec.sizes.get("time", 0) > max_time_cols:
+            stride = int(np.ceil(da_spec.sizes["time"] / max_time_cols))
+            da_spec = da_spec.isel(time=slice(None, None, stride))
+
+        times = da_spec.time.values
+        freqs = da_spec.frequency.values
+        spectral_values = da_spec.values
+        spectral_values = np.asarray(spectral_values, dtype=float)
+        spectral_values[spectral_values <= 0] = np.nan
+        with np.errstate(invalid="ignore"):
+            spectral_values = np.log10(spectral_values)
+
         fig.add_trace(
-            go.Contour(
+            go.Heatmap(
                 x=times,
                 y=freqs,
-                z=spectral_values,
+                z=spectral_values.T,
                 zmin=-2,
                 zmax=2,
-                line_smoothing=0.85,
                 colorscale="Viridis",
                 colorbar=dict(
                     title="log₁₀(m²/Hz)",
@@ -1432,10 +1242,6 @@ def make_spectral_overview(ds, ds_spectral):
                     y=0.15,
                 ),
                 hovertemplate="Time: %{x}<br>Freq: %{y:.3f} Hz<br>Density: %{z:.3f} m²/Hz<extra></extra>",
-                contours=dict(
-                    coloring='heatmap',
-                    showlabels=False,
-                ),
             ),
             row=3, col=1
         )
@@ -1748,13 +1554,20 @@ def _compress_file(filepath: str) -> None:
     """Compress a file with gzip and remove the original."""
     import gzip
     import shutil
-    
+
     compressed_path = f"{filepath}.gz"
-    with open(filepath, 'rb') as f_in:
-        with gzip.open(compressed_path, 'wb', compresslevel=9) as f_out:
-            shutil.copyfileobj(f_in, f_out)
-    os.remove(filepath)
-    logger.info(f"Compressed {filepath} to {compressed_path}")
+    temp_compressed_path = f"{compressed_path}.tmp"
+    try:
+        with open(filepath, 'rb') as f_in:
+            with gzip.open(temp_compressed_path, 'wb', compresslevel=9) as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        os.replace(temp_compressed_path, compressed_path)
+        os.remove(filepath)
+        logger.info(f"Compressed {filepath} to {compressed_path}")
+    except Exception:
+        if os.path.exists(temp_compressed_path):
+            os.remove(temp_compressed_path)
+        raise
 
 
 def fetch_data(start_date: datetime.date) -> None:
@@ -1779,9 +1592,8 @@ def fetch_data(start_date: datetime.date) -> None:
     ds_wec.to_netcdf(wec_path, engine="h5netcdf", invalid_netcdf=True)
     _compress_file(wec_path)
 
-    # Fetch spectral data
-    ds_spectral = fetch_ndbc_spectral(buoy_ids=None, #TODO
-                                      start_date=start_date)
+    # Fetch spectral data for buoy 44014 only
+    ds_spectral = fetch_ndbc_spectral(start_date=start_date)
     if len(ds_spectral.data_vars) > 0:
         spectral_path = os.path.join(DATA_DIR, "ndbc_spectral.h5")
         ds_spectral.to_netcdf(spectral_path, engine="h5netcdf", invalid_netcdf=True)
@@ -1793,6 +1605,7 @@ def fetch_data(start_date: datetime.date) -> None:
 def load_cached_data() -> tuple[xr.Dataset, xr.Dataset, xr.Dataset, xr.Dataset]:
     import gzip
     import tempfile
+    from gzip import BadGzipFile
     
     pwrsys_path = DATA_DIR / "pwrsys_data.h5.gz"
     ndbc_path = DATA_DIR / "ndbc_data.h5.gz"
@@ -1806,27 +1619,47 @@ def load_cached_data() -> tuple[xr.Dataset, xr.Dataset, xr.Dataset, xr.Dataset]:
             f"Missing cached data files: {missing_list}. Run 'python app.py fetch-data' first."
         )
 
-    # Decompress and load each file
-    def load_gzipped_dataset(gz_path):
+    # Prefer plain .h5 when present (e.g., interrupted compression left it behind).
+    # Otherwise load .h5.gz by decompressing to a temporary file.
+    def load_cached_dataset(base_path: Path):
+        plain_path = Path(str(base_path).removesuffix('.gz')) if str(base_path).endswith('.gz') else base_path
+
+        if plain_path.exists():
+            return xr.load_dataset(
+                plain_path,
+                engine="h5netcdf",
+                decode_timedelta=False,
+            )
+
         with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp:
             temp_path = tmp.name
-            with gzip.open(gz_path, 'rb') as f_in:
-                tmp.write(f_in.read())
-        
+            try:
+                with gzip.open(base_path, 'rb') as f_in:
+                    tmp.write(f_in.read())
+            except BadGzipFile as e:
+                os.remove(temp_path)
+                raise RuntimeError(
+                    f"Corrupted gzip cache file: {base_path}. Re-run 'python app.py fetch-data'."
+                ) from e
+
         try:
-            ds = xr.load_dataset(temp_path, engine="h5netcdf")
+            ds = xr.load_dataset(
+                temp_path,
+                engine="h5netcdf",
+                decode_timedelta=False,
+            )
         finally:
             os.remove(temp_path)
-        
+
         return ds
     
-    ds_pwrsys = load_gzipped_dataset(pwrsys_path)
-    ds_ndbc = load_gzipped_dataset(ndbc_path)
-    ds_wec = load_gzipped_dataset(wec_path)
-    
+    ds_pwrsys = load_cached_dataset(pwrsys_path)
+    ds_ndbc = _adapt_ndbc_stdmet(load_cached_dataset(ndbc_path))
+    ds_wec = load_cached_dataset(wec_path)
+
     # Load spectral data if available
     if spectral_path.exists():
-        ds_spectral = load_gzipped_dataset(spectral_path)
+        ds_spectral = _adapt_ndbc_spectral(load_cached_dataset(spectral_path))
         logger.info("Loaded spectral data")
     else:
         ds_spectral = xr.Dataset()
