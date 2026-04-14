@@ -1746,23 +1746,44 @@ def _copy_site_output() -> None:
 
 def build_jekyll_site() -> None:
     import subprocess
+    import shutil
+    from pathlib import Path
 
     logger.info("Building Jekyll site...")
+
+    # Windows often provides bundle as bundle.bat / bundle.cmd; resolve explicitly
+    bundle = (
+        shutil.which("bundle")
+        or shutil.which("bundle.bat")
+        or shutil.which("bundle.cmd")
+    )
+    if not bundle:
+        logger.error(
+            "Bundler ('bundle') not found on PATH. Install Ruby/Bundler and ensure Ruby\\bin is on PATH."
+        )
+        return
+
+    # Build Jekyll somewhere other than output/ so it won't delete output/data and plot HTML
+    site_dir = Path("output/site")
+    site_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd = [bundle, "exec", "jekyll", "build", "-d", str(site_dir)]
+
     try:
         result = subprocess.run(
-            ["bundle", "exec", "jekyll", "build"],
+            cmd,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=600,
         )
         if result.returncode == 0:
             logger.info("Jekyll site built successfully")
-            if result.stdout:
-                logger.info(f"Output: {result.stdout}")
         else:
-            logger.error(f"Jekyll build failed: {result.stderr}")
-    except FileNotFoundError:
-        logger.error("Jekyll not found. Install with: gem install bundler && bundle install")
+            logger.error(
+                "Jekyll build failed\n"
+                f"STDOUT:\n{result.stdout}\n"
+                f"STDERR:\n{result.stderr}"
+            )
     except subprocess.TimeoutExpired:
         logger.error("Jekyll build timed out")
     except Exception as e:
