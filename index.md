@@ -25,8 +25,11 @@ carousels:
 
 ## Overview
 
-This dashboard shows data from the Pioneer wave energy converter (WEC) v1 prototype's deployment, which provides power to a mooring within the [Coastal Pioneer Array](https://oceanobservatories.org/pioneer-array-relocation/). The [Coastal Pioneer Array](https://oceanobservatories.org/pioneer-array-relocation/) is an NSF-funded project within the [Ocean Observatories Initiative (OOI)](https://oceanobservatories.org/) that provides oceanographic data relevant to cross-shelf dynamics. The Pioneer WEC uses a novel pitch resonator design {% cite Lee:2024aa Coe:2023aa %} that has been optimized through modeling {% cite Grasberger:2024ab %}, testing {% cite Lee:2024aa Coe:2024ab %}, control co-design {% cite Devin:2024aa Coe:2024aa Keow:2025aa Keow:2025ab %}.
-The Pioneer WEC v1 prototype was deployed on November 3rd, 2025 and is rescheduled to be recovered in May, 2026.
+This dashboard shows data from the Pioneer wave energy converter (WEC) v1 prototype's deployment
+The Pioneer WEC provides power to a mooring within the [Coastal Pioneer Array](https://oceanobservatories.org/pioneer-array-relocation/).
+The [Coastal Pioneer Array](https://oceanobservatories.org/pioneer-array-relocation/) is an NSF-funded project within the [Ocean Observatories Initiative (OOI)](https://oceanobservatories.org/) that provides oceanographic data relevant to cross-shelf dynamics.
+The Pioneer WEC uses a novel pitch resonator design {% cite Lee:2024aa Coe:2023aa %} that has been optimized through modeling {% cite Grasberger:2024ab %}, testing {% cite Lee:2024aa Coe:2024ab %}, control co-design {% cite Devin:2024aa Coe:2024aa Keow:2025aa Keow:2025ab %}.
+The Pioneer WEC v1 prototype was deployed on November 3rd, 2025 and is scheduled to be recovered in May, 2026.
 
 ## Project goals
 
